@@ -1,72 +1,50 @@
 #!/usr/bin/env bash
-
-set -e
-
-variant=${1:-${VARIANT}}
-service=${2:-${SERVICE_NAME}}
-port=${3:-${PORT_NUMBER}}
-
-path=$(dirname "$0")
-
-timed() {
-  end=$(date +%s)
-  dt=$(("$end" - $1))
-  dd=$(("$dt" / 86400))
-  dt2=$(("$dt" - 86400 * "$dd"))
-  dh=$(("$dt2" / 3600))
-  dt3=$(("$dt2" - 3600 * "$dh"))
-  dm=$(("$dt3" / 60))
-  ds=$(("$dt3" - 60 * "$dm"))
-
-  LC_NUMERIC=C printf "\nTotal runtime: %02d min %02d seconds\n" "$dm" "$ds"
+# The environment is shared across failover stages so reservation identities and
+# the original loyalty count survive separate Newman processes.
+set -euo pipefail
+cd "$(dirname "$0")/.."
+variant=${1:-${VARIANT:-v2}}
+service=${2:-${SERVICE_NAME:-loyalty}}
+port=${3:-${PORT_NUMBER:-8050}}
+newman=${NEWMAN_BIN:-newman}
+[[ $variant == v2 && $service == loyalty && $port == 8050 ]] || {
+  echo 'This implementation tests variant v2, service loyalty, port 8050.' >&2; exit 1;
 }
-
-success() {
-  newman run \
-    --delay-request=100 \
-    --folder=success \
-    --export-environment "$variant"/postman/environment.json \
-    --environment "$variant"/postman/environment.json \
-    "$variant"/postman/collection.json
+work=$(mktemp -d /tmp/lab3-failover.XXXXXX)
+stopped=false
+cleanup() {
+  result=$?
+  trap - EXIT
+  if $stopped; then docker compose start "$service" || true; fi
+  rm -rf "$work"
+  exit "$result"
 }
-
-step() {
-  local step=$1
-  [[ $((step % 2)) -eq 0 ]] && operation="start" || operation="stop"
-
-  printf "=== Step %d: %s %s ===\n" "$step" "$operation" "$service"
-
-  docker compose "$operation" "$service"
-  if [[ "$operation" == "start" ]]; then
-    "$path"/wait-for.sh -t 120 "http://localhost:$port/manage/health" -- echo "Host localhost:$port is active"
-  fi
-
-  newman run \
-    --delay-request=100 \
-    --folder=step"$step" \
-    --export-environment "$variant"/postman/environment.json \
-    --environment "$variant"/postman/environment.json \
-    "$variant"/postman/collection.json
-
-  printf "=== Step %d completed ===\n" "$step"
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+cp "$variant/postman/environment.json" "$work/environment.json"
+run_folder() {
+  "$newman" run "$variant/postman/collection.json" --folder "$1" \
+    --environment "$work/environment.json" --export-environment "$work/next.json" \
+    --delay-request 100 --bail
+  mv "$work/next.json" "$work/environment.json"
 }
-
-start=$(date +%s)
-trap 'timed $start' EXIT
-
-printf "=== Start test scenario ===\n"
-
-# success execute
-success
-
-# stop service
-step 1
-
-# start service
-step 2
-
-# stop service
-step 3
-
-# start service
-step 4
+stop_service() {
+  # Mark first so cleanup also handles an interrupted compose stop.
+  stopped=true
+  docker compose stop "$service"
+}
+start_service() {
+  docker compose start "$service"
+  ./scripts/wait-for.sh -t 120 "http://localhost:$port/manage/health"
+  stopped=false
+}
+run_folder success
+stop_service
+run_folder step1
+start_service
+run_folder step2
+stop_service
+run_folder step3
+start_service
+run_folder step4
