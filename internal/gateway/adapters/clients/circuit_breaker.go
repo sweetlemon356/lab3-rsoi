@@ -13,12 +13,10 @@ import (
 var ErrCircuitOpen = errors.New("circuit breaker is open")
 
 type circuitState struct {
-	firstResultAt time.Time
-	lastResultAt  time.Time
-	failures      int
-	retryAt       time.Time
-	probing       bool
-	generation    uint64
+	failureTimes []time.Time
+	retryAt      time.Time
+	probing      bool
+	generation   uint64
 }
 
 type CircuitTransport struct {
@@ -58,7 +56,7 @@ func (t *CircuitTransport) RoundTrip(r *http.Request) (*http.Response, error) {
 	t.mu.Lock()
 	state := t.states[key]
 	if state == nil {
-		state = &circuitState{}
+		state = &circuitState{failureTimes: make([]time.Time, 0, t.threshold)}
 		t.states[key] = state
 	}
 	if !state.retryAt.IsZero() {
@@ -99,24 +97,16 @@ func (t *CircuitTransport) complete(r *http.Request, state *circuitState, genera
 			state.retryAt = now.Add(t.cooldown)
 		} else {
 			state.retryAt = time.Time{}
-			state.failures = 0
-			state.firstResultAt = time.Time{}
-			state.lastResultAt = time.Time{}
+			state.failureTimes = state.failureTimes[:0]
 		}
-	} else {
-		if state.firstResultAt.IsZero() || now.Sub(state.firstResultAt) > t.window {
-			state.firstResultAt = now
-			state.failures = 0
+	} else if failed {
+		// Only the latest threshold failures can determine whether to open the circuit.
+		if len(state.failureTimes) == t.threshold {
+			copy(state.failureTimes, state.failureTimes[1:])
+			state.failureTimes = state.failureTimes[:t.threshold-1]
 		}
-		state.lastResultAt = now
-		if failed {
-			if state.failures < t.threshold {
-				state.failures++
-			}
-		} else if state.failures > 0 {
-			state.failures--
-		}
-		if state.failures >= t.threshold && state.lastResultAt.Sub(state.firstResultAt) <= t.window {
+		state.failureTimes = append(state.failureTimes, now)
+		if len(state.failureTimes) == t.threshold && now.Sub(state.failureTimes[0]) <= t.window {
 			state.retryAt = now.Add(t.cooldown)
 			state.generation++
 		}

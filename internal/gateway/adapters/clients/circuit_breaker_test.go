@@ -53,15 +53,15 @@ func TestCircuitThresholdIsolationAndWriteBypass(t *testing.T) {
 	}
 }
 
-func TestCircuitFailureCounter(t *testing.T) {
+func TestCircuitCountsFailuresAcrossSuccessfulResponses(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
 		statuses []int
 	}{
-		{"success compensates one failure without resetting", []int{500, 500, 200, 500, 500}},
-		{"not found compensates one failure", []int{500, 500, 404, 500, 500}},
-		{"successes do not create credit below zero", []int{200, 404, 200, 500, 500, 500}},
-		{"alternating results do not accumulate failures", []int{500, 200, 500, 404, 500, 200, 500, 500, 500}},
+		{"success preserves previous failures", []int{500, 500, 200, 500}},
+		{"not found preserves previous failures", []int{500, 500, 404, 500}},
+		{"successes do not create credit", []int{200, 404, 200, 500, 500, 500}},
+		{"alternating results accumulate failures", []int{500, 200, 500, 404, 500}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			status := 200
@@ -73,11 +73,11 @@ func TestCircuitFailureCounter(t *testing.T) {
 			for _, next := range tc.statuses {
 				status = next
 				if err := call(t, transport, request("GET", "backend", "/read")); err != nil {
-					t.Fatalf("circuit opened before counter reached threshold: %v", err)
+					t.Fatalf("circuit opened before enough failures: %v", err)
 				}
 			}
 			if err := call(t, transport, request("GET", "backend", "/read")); !errors.Is(err, ErrCircuitOpen) {
-				t.Fatalf("counter reaching threshold did not open circuit: %v", err)
+				t.Fatalf("failures reaching threshold did not open circuit: %v", err)
 			}
 			if calls != len(tc.statuses) {
 				t.Fatalf("blocked request reached backend: calls=%d", calls)
@@ -124,30 +124,71 @@ func TestCircuitFailureObservationInterval(t *testing.T) {
 	}
 }
 
-func TestCircuitObservationIntervalStartsWithFirstResult(t *testing.T) {
+func TestCircuitSuccessfulResponsesDoNotStartFailureWindow(t *testing.T) {
 	now := time.Now()
 	status := 200
 	transport := NewCircuitTransport(roundTripFunc(func(*http.Request) (*http.Response, error) {
 		return reply(status), nil
 	}), 2, 10*time.Second, time.Second)
 	transport.now = func() time.Time { return now }
-	// Even a success starts the observation interval.
 	call(t, transport, request("GET", "backend", "/read"))
 	now = now.Add(9 * time.Second)
 	status = 500
 	call(t, transport, request("GET", "backend", "/read"))
 	now = now.Add(2 * time.Second)
-	for range 2 {
-		if err := call(t, transport, request("GET", "backend", "/read")); err != nil {
-			t.Fatalf("old interval contributed to new failures: %v", err)
-		}
+	if err := call(t, transport, request("GET", "backend", "/read")); err != nil {
+		t.Fatal(err)
 	}
 	if err := call(t, transport, request("GET", "backend", "/read")); !errors.Is(err, ErrCircuitOpen) {
-		t.Fatalf("new interval did not open circuit: %v", err)
+		t.Fatalf("recent failures did not open circuit: %v", err)
 	}
 }
 
-func TestCircuitSuccessfulProbeResetsFailureCounter(t *testing.T) {
+func TestCircuitKeepsLatestFailuresWhenOldestExpires(t *testing.T) {
+	start := time.Now()
+	now := start
+	transport := NewCircuitTransport(roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return reply(500), nil
+	}), 3, 10*time.Second, time.Second)
+	transport.now = func() time.Time { return now }
+	// Old failures keep getting evicted; the final three at 33, 34 and 35 seconds fit.
+	for _, elapsed := range []time.Duration{0, 11, 22, 33, 34, 35} {
+		now = start.Add(elapsed * time.Second)
+		if err := call(t, transport, request("GET", "backend", "/read")); err != nil {
+			t.Fatalf("circuit opened before three recent failures: %v", err)
+		}
+	}
+	if err := call(t, transport, request("GET", "backend", "/read")); !errors.Is(err, ErrCircuitOpen) {
+		t.Fatalf("latest three failures did not open circuit: %v", err)
+	}
+}
+
+func TestCircuitSuccessesDoNotEvictFailureHistory(t *testing.T) {
+	now := time.Now()
+	status := 500
+	transport := NewCircuitTransport(roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return reply(status), nil
+	}), 3, 10*time.Second, time.Second)
+	transport.now = func() time.Time { return now }
+	call(t, transport, request("GET", "backend", "/read"))
+	status = 200
+	for range 20 {
+		if err := call(t, transport, request("GET", "backend", "/read")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	status = 500
+	for range 2 {
+		if err := call(t, transport, request("GET", "backend", "/read")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := call(t, transport, request("GET", "backend", "/read")); !errors.Is(err, ErrCircuitOpen) {
+		t.Fatalf("successes evicted failures within the time window: %v", err)
+	}
+}
+
+func TestCircuitSuccessfulProbeClearsFailureHistory(t *testing.T) {
 	now := time.Now()
 	status := 500
 	transport := NewCircuitTransport(roundTripFunc(func(*http.Request) (*http.Response, error) { return reply(status), nil }), 2, 10*time.Second, time.Second)
@@ -162,14 +203,14 @@ func TestCircuitSuccessfulProbeResetsFailureCounter(t *testing.T) {
 	}
 	now = now.Add(time.Second)
 	// Recover, then accumulate failures from zero.
-	for _, next := range []int{200, 500, 404, 500, 500} {
+	for _, next := range []int{200, 500, 404, 500} {
 		status = next
 		if err := call(t, transport, request("GET", "backend", "/read")); err != nil {
-			t.Fatalf("counter was not reset on recovery: %v", err)
+			t.Fatalf("failure history was not cleared on recovery: %v", err)
 		}
 	}
 	if err := call(t, transport, request("GET", "backend", "/read")); !errors.Is(err, ErrCircuitOpen) {
-		t.Fatalf("counter did not open circuit after recovery: %v", err)
+		t.Fatalf("recent failures did not open circuit after recovery: %v", err)
 	}
 }
 
