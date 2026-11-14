@@ -43,7 +43,7 @@ func main() {
 
 func buildHandler(cfg config.Config, logger *slog.Logger, httpClient *http.Client) (http.Handler, func(context.Context)) {
 	protectedClient := *httpClient
-	protectedClient.Transport = clients.NewCircuitTransport(httpClient.Transport, cfg.CircuitThreshold, cfg.CircuitTimeout)
+	protectedClient.Transport = clients.NewCircuitTransport(httpClient.Transport, cfg.CircuitThreshold, cfg.CircuitWindow, cfg.CircuitTimeout)
 	httpClient = &protectedClient
 	capacity := cfg.RetryCapacity
 	if capacity <= 0 {

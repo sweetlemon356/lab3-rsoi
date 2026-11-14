@@ -13,34 +13,38 @@ import (
 var ErrCircuitOpen = errors.New("circuit breaker is open")
 
 type circuitState struct {
-	failures   int
-	retryAt    time.Time
-	probing    bool
-	generation uint64
+	firstResultAt time.Time
+	lastResultAt  time.Time
+	failures      int
+	retryAt       time.Time
+	probing       bool
+	generation    uint64
 }
 
-// CircuitTransport protects semantic reads, including the POST quote operation.
-// Writes and compensations must remain available even when reads are blocked.
 type CircuitTransport struct {
 	base      http.RoundTripper
 	threshold int
+	window    time.Duration
 	cooldown  time.Duration
 	now       func() time.Time
 	mu        sync.Mutex
 	states    map[string]*circuitState
 }
 
-func NewCircuitTransport(base http.RoundTripper, threshold int, cooldown time.Duration) *CircuitTransport {
+func NewCircuitTransport(base http.RoundTripper, threshold int, window, cooldown time.Duration) *CircuitTransport {
 	if base == nil {
 		base = http.DefaultTransport
 	}
 	if threshold <= 0 {
 		threshold = 3
 	}
+	if window <= 0 {
+		window = 10 * time.Second
+	}
 	if cooldown <= 0 {
 		cooldown = 10 * time.Second
 	}
-	return &CircuitTransport{base: base, threshold: threshold, cooldown: cooldown, now: time.Now, states: make(map[string]*circuitState)}
+	return &CircuitTransport{base: base, threshold: threshold, window: window, cooldown: cooldown, now: time.Now, states: make(map[string]*circuitState)}
 }
 
 func (t *CircuitTransport) RoundTrip(r *http.Request) (*http.Response, error) {
@@ -71,8 +75,6 @@ func (t *CircuitTransport) RoundTrip(r *http.Request) (*http.Response, error) {
 	if err != nil || response.StatusCode >= 500 {
 		t.complete(r, state, generation, probe, true)
 	} else {
-		// Headers alone do not prove availability: the body may stall or break.
-		// Keep a recovery probe exclusive until its response has been consumed.
 		response.Body = &circuitBody{ReadCloser: response.Body, complete: func(failed bool) {
 			t.complete(r, state, generation, probe, failed)
 		}}
@@ -83,36 +85,44 @@ func (t *CircuitTransport) RoundTrip(r *http.Request) (*http.Response, error) {
 func (t *CircuitTransport) complete(r *http.Request, state *circuitState, generation uint64, probe, failed bool) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	// Ignore requests admitted before a transition; they cannot close a newer circuit.
 	if state.generation != generation {
 		return
 	}
 	if errors.Is(r.Context().Err(), context.Canceled) && !probe {
-		// A caller cancellation says nothing about backend availability. A client
-		// timeout is still counted when the parent request context remains valid.
 		return
 	}
+	now := t.now()
 	if probe {
 		state.probing = false
 		state.generation++
 		if failed {
-			state.retryAt = t.now().Add(t.cooldown)
+			state.retryAt = now.Add(t.cooldown)
 		} else {
 			state.retryAt = time.Time{}
 			state.failures = 0
-		}
-	} else if failed {
-		state.failures++
-		if state.failures >= t.threshold {
-			state.retryAt = t.now().Add(t.cooldown)
-			state.generation++
+			state.firstResultAt = time.Time{}
+			state.lastResultAt = time.Time{}
 		}
 	} else {
-		state.failures = 0
+		if state.firstResultAt.IsZero() || now.Sub(state.firstResultAt) > t.window {
+			state.firstResultAt = now
+			state.failures = 0
+		}
+		state.lastResultAt = now
+		if failed {
+			if state.failures < t.threshold {
+				state.failures++
+			}
+		} else if state.failures > 0 {
+			state.failures--
+		}
+		if state.failures >= t.threshold && state.lastResultAt.Sub(state.firstResultAt) <= t.window {
+			state.retryAt = now.Add(t.cooldown)
+			state.generation++
+		}
 	}
 }
 
-// CloseIdleConnections preserves http.Client's connection cleanup through the wrapper.
 func (t *CircuitTransport) CloseIdleConnections() {
 	if closer, ok := t.base.(interface{ CloseIdleConnections() }); ok {
 		closer.CloseIdleConnections()

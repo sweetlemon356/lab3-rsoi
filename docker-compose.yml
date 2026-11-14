@@ -9,6 +9,7 @@ services:
       PAYMENT_URL: "http://payment:8060"
       LOYALTY_URL: "http://loyalty:8050"
       CIRCUIT_THRESHOLD: "3"
+      CIRCUIT_WINDOW: "10s"
       CIRCUIT_TIMEOUT: "10s"
       RETRY_INTERVAL: "10s"
       RETRY_CAPACITY: "1024"

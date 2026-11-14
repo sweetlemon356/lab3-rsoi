@@ -12,7 +12,7 @@ import (
 
 type Config struct {
 	CircuitThreshold, RetryCapacity                                int
-	CircuitTimeout, RetryInterval                                  time.Duration
+	CircuitWindow, CircuitTimeout, RetryInterval                   time.Duration
 	Address                                                        string
 	ReservationURL, PaymentURL, LoyaltyURL                         string
 	RequestTimeout, ClientTimeout, CleanupTimeout, ShutdownTimeout time.Duration
@@ -55,6 +55,7 @@ func Load() (Config, error) {
 		{"CLEANUP_TIMEOUT", 2 * time.Second, &cfg.CleanupTimeout},
 		{"SHUTDOWN_TIMEOUT", 10 * time.Second, &cfg.ShutdownTimeout},
 		{"CIRCUIT_TIMEOUT", 10 * time.Second, &cfg.CircuitTimeout},
+		{"CIRCUIT_WINDOW", 10 * time.Second, &cfg.CircuitWindow},
 		{"RETRY_INTERVAL", 10 * time.Second, &cfg.RetryInterval},
 	} {
 		value, err := time.ParseDuration(environment(item.key, item.fallback.String()))
