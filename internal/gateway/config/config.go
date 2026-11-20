@@ -14,6 +14,8 @@ type Config struct {
 	CircuitThreshold, RetryCapacity                                int
 	CircuitWindow, CircuitTimeout, RetryInterval                   time.Duration
 	Address                                                        string
+	RabbitMQURL                                                    string
+	BrokerTimeout                                                  time.Duration
 	ReservationURL, PaymentURL, LoyaltyURL                         string
 	RequestTimeout, ClientTimeout, CleanupTimeout, ShutdownTimeout time.Duration
 }
@@ -26,6 +28,14 @@ func Load() (Config, error) {
 	}
 	if !validPort(port) {
 		return Config{}, fmt.Errorf("GATEWAY_ADDR port must be between 1 and 65535")
+	}
+	cfg.RabbitMQURL = environment("RABBITMQ_URL", "amqp://booking:booking@localhost:5672/")
+	brokerURL, err := url.Parse(cfg.RabbitMQURL)
+	if err != nil || (brokerURL.Scheme != "amqp" && brokerURL.Scheme != "amqps") || brokerURL.Hostname() == "" || brokerURL.RawQuery != "" || brokerURL.Fragment != "" || brokerURL.ForceQuery {
+		return Config{}, fmt.Errorf("RABBITMQ_URL must be an AMQP URL without query or fragment")
+	}
+	if brokerURL.Port() != "" && !validPort(brokerURL.Port()) {
+		return Config{}, fmt.Errorf("RABBITMQ_URL has an invalid port")
 	}
 	for _, item := range []struct {
 		key, fallback string
@@ -57,6 +67,7 @@ func Load() (Config, error) {
 		{"CIRCUIT_TIMEOUT", 10 * time.Second, &cfg.CircuitTimeout},
 		{"CIRCUIT_WINDOW", 10 * time.Second, &cfg.CircuitWindow},
 		{"RETRY_INTERVAL", 10 * time.Second, &cfg.RetryInterval},
+		{"BROKER_TIMEOUT", 2 * time.Second, &cfg.BrokerTimeout},
 	} {
 		value, err := time.ParseDuration(environment(item.key, item.fallback.String()))
 		if err != nil || value <= 0 {

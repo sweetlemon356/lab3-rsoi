@@ -35,6 +35,10 @@ trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
+# RabbitMQ is an external disposable broker, e.g. docker compose up -d --wait rabbitmq.
+export RABBITMQ_URL="${RABBITMQ_URL:-amqp://booking:booking@localhost:5672/}"
+export RABBITMQ_TEST_URL="$RABBITMQ_URL"
+
 export PGHOST=127.0.0.1 PGPORT="${TEST_PG_PORT:-55432}" PGUSER=postgres PGDATABASE=postgres
 mkdir "$work/socket" "$work/bin"
 initdb -D "$work/data" -U postgres -A trust --encoding=UTF8 --no-locale >"$work/initdb.log"
@@ -78,7 +82,8 @@ for pair in reservation:8070 payment:8060 loyalty:8050; do
 done
 GATEWAY_ADDR=127.0.0.1:8080 RESERVATION_URL=http://127.0.0.1:8070 PAYMENT_URL=http://127.0.0.1:8060 LOYALTY_URL=http://127.0.0.1:8050 \
   "$work/bin/gateway" >"$work/gateway.log" 2>&1 &
-pids+=("$!")
+gateway_pid=$!
+pids+=("$gateway_pid")
 
 for port in 8070 8060 8050 8080; do
   ready=false
@@ -116,6 +121,14 @@ run_api_folder step2
 kill "$loyalty_pid"
 wait "$loyalty_pid"
 run_api_folder step3
+# The queued loyalty cancellation must survive an actual Gateway restart.
+kill "$gateway_pid"
+wait "$gateway_pid"
+GATEWAY_ADDR=127.0.0.1:8080 RESERVATION_URL=http://127.0.0.1:8070 PAYMENT_URL=http://127.0.0.1:8060 LOYALTY_URL=http://127.0.0.1:8050 \
+  "$work/bin/gateway" >>"$work/gateway.log" 2>&1 &
+gateway_pid=$!
+pids+=("$gateway_pid")
+./scripts/wait-for.sh -t 30 http://127.0.0.1:8080/manage/health
 start_loyalty
 run_api_folder step4
 
@@ -134,4 +147,4 @@ for port in 8070 8060 8050; do
   status=$(curl --max-time 8 -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$port/manage/health")
   [[ $status == 503 ]] || { echo "Expected 503 after DB stop on $port, got $status" >&2; exit 1; }
 done
-echo "All services, migrations, database isolation, race tests, Postman and system checks passed."
+echo "All services, migrations, database isolation, race tests, Postman, RabbitMQ queue recovery and system checks passed."

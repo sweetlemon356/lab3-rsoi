@@ -56,6 +56,19 @@ jobs:
 
   unit:
     name: Go unit tests
+    services:
+      rabbitmq:
+        image: rabbitmq:4.2-management
+        env:
+          RABBITMQ_DEFAULT_USER: booking
+          RABBITMQ_DEFAULT_PASS: booking
+        ports:
+          - 5672:5672
+        options: >-
+          --health-cmd "rabbitmq-diagnostics -q check_running" --health-interval 5s
+          --health-timeout 10s --health-retries 30
+    env:
+      RABBITMQ_TEST_URL: amqp://booking:booking@localhost:5672/
     needs: [checks, build]
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -139,6 +152,9 @@ jobs:
           VARIANT: v2
           SERVICE_NAME: loyalty
           PORT_NUMBER: 8050
+      - name: RabbitMQ and Gateway restart recovery
+        timeout-minutes: 3
+        run: ./scripts/test-broker-recovery.sh
       - name: Classroom autograding
         uses: education/autograding@v1
         id: autograder

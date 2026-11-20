@@ -18,7 +18,7 @@ GOOSE_TAGS := no_clickhouse no_libsql no_mssql no_mysql no_sqlite3 no_vertica no
 
 .PHONY: help fmt fmt-check vet test test-race check build clean run tools \
         compose-check images up down db logs ps health migrate migrate-status \
-        test-integration test-api test-failover test-e2e test-system require-service require-db-service
+        test-integration test-api test-failover test-e2e test-system test-broker-recovery require-service require-db-service
 
 help: ## Список основных команд
 	@awk 'BEGIN {FS = ":.*## "; print "Команды (make <имя>):"} /^[a-zA-Z0-9_-]+:.*## / {printf "  %-19s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -67,7 +67,7 @@ images: ## Собрать все Docker-образы
 up: ## Собрать и поднять систему, дождаться готовности
 	$(COMPOSE) up -d --build --wait --wait-timeout $(WAIT_TIMEOUT)
 
-down: ## Остановить Compose, сохранив данные PostgreSQL
+down: ## Остановить Compose, сохранив данные PostgreSQL и RabbitMQ
 	$(COMPOSE) down
 
 db: ## Поднять только PostgreSQL из Compose
@@ -104,10 +104,13 @@ test-api: ## Исходная приемочная коллекция Postman н
 test-failover: ## Приемочные сценарии с остановкой Loyalty в Docker Compose
 	NEWMAN_BIN="$(NEWMAN)" ./scripts/test-script.sh v2 loyalty 8050
 
+test-broker-recovery: ## Проверить сохранение компенсации при перезапуске RabbitMQ и Gateway на тестовом Compose
+	./scripts/test-broker-recovery.sh
+
 test-e2e: ## Дополнительные системные тесты на работающей тестовой системе
 	SYSTEM_TEST_URL="$(BASE_URL)" $(GO) test -race -count=1 -v ./tests/system
 
-test-system: ## Полный нативный прогон с временным PostgreSQL и четырьмя сервисами
+test-system: ## Полный нативный прогон с временным PostgreSQL, внешним RabbitMQ и четырьмя сервисами
 	GOOSE_BIN="$(GOOSE)" NEWMAN_BIN="$(NEWMAN)" ./scripts/test-system.sh
 
 require-service:

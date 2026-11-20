@@ -14,7 +14,7 @@ type queueFake struct {
 	err   error
 }
 
-func (q *queueFake) Enqueue(task app.CleanupTask) error {
+func (q *queueFake) Enqueue(_ context.Context, task app.CleanupTask) error {
 	if q.err != nil {
 		return q.err
 	}

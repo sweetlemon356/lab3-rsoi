@@ -32,7 +32,7 @@ func (s *Service) CancelReservation(ctx context.Context, username, reservationUI
 		if !unavailable(ctx, err) {
 			return fmt.Errorf("cancel loyalty accounting: %w", err)
 		}
-		if queueErr := s.deferCleanup(CleanupTask{Kind: RemoveLoyalty, Username: username, UID: reservationUID}); queueErr != nil {
+		if queueErr := s.deferCleanup(ctx, CleanupTask{Kind: RemoveLoyalty, Username: username, UID: reservationUID}); queueErr != nil {
 			return fmt.Errorf("defer loyalty cancellation: %w", errors.Join(err, queueErr))
 		}
 	}

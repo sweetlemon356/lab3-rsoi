@@ -1,10 +1,13 @@
 services:
   gateway:
+    restart: on-failure
     build:
       context: .
       dockerfile: Dockerfile.gateway
     environment:
       GATEWAY_ADDR: ":8080"
+      RABBITMQ_URL: "amqp://booking:booking@rabbitmq:5672/"
+      BROKER_TIMEOUT: "2s"
       RESERVATION_URL: "http://reservation:8070"
       PAYMENT_URL: "http://payment:8060"
       LOYALTY_URL: "http://loyalty:8050"
@@ -16,6 +19,8 @@ services:
     ports:
       - "8080:8080"
     depends_on:
+      rabbitmq:
+        condition: service_healthy
       reservation:
         condition: service_healthy
       payment:
@@ -92,6 +97,24 @@ services:
       retries: 10
       start_period: 10s
 
+  rabbitmq:
+    image: rabbitmq:4.2-management
+    hostname: rabbitmq
+    restart: on-failure
+    environment:
+      RABBITMQ_DEFAULT_USER: booking
+      RABBITMQ_DEFAULT_PASS: booking
+    volumes:
+      - rabbitmq-data:/var/lib/rabbitmq
+    ports:
+      - "127.0.0.1:5672:5672"
+      - "127.0.0.1:15672:15672"
+    healthcheck:
+      test: ["CMD-SHELL", "rabbitmq-diagnostics -q check_running && rabbitmq-diagnostics -q check_port_connectivity"]
+      interval: 5s
+      timeout: 10s
+      retries: 30
+
   postgres:
     image: library/postgres:13
     restart: on-failure
@@ -111,4 +134,5 @@ services:
       retries: 30
 
 volumes:
+  rabbitmq-data:
   db-data-v3:

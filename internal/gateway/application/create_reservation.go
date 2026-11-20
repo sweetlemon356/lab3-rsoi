@@ -106,7 +106,7 @@ func (s *Service) compensate(ctx context.Context, cause error, undo []CleanupTas
 	for i := len(undo) - 1; i >= 0; i-- {
 		if err := s.Cleanup(cleanup, undo[i]); err != nil {
 			if s.retryQueue != nil {
-				if queueErr := s.deferCleanup(undo[i]); queueErr != nil {
+				if queueErr := s.deferCleanup(context.WithoutCancel(ctx), undo[i]); queueErr != nil {
 					result = errors.Join(result, queueErr)
 				}
 			}

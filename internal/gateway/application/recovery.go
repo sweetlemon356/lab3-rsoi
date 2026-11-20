@@ -21,7 +21,9 @@ type CleanupTask struct {
 	UID      string
 }
 
-type RetryQueue interface{ Enqueue(CleanupTask) error }
+type RetryQueue interface {
+	Enqueue(context.Context, CleanupTask) error
+}
 type Option func(*Service)
 
 func WithRetryQueue(queue RetryQueue) Option { return func(s *Service) { s.retryQueue = queue } }
@@ -39,11 +41,11 @@ func (s *Service) Cleanup(ctx context.Context, task CleanupTask) error {
 	}
 }
 
-func (s *Service) deferCleanup(task CleanupTask) error {
+func (s *Service) deferCleanup(ctx context.Context, task CleanupTask) error {
 	if s.retryQueue == nil {
 		return errors.New("retry queue is not configured")
 	}
-	return s.retryQueue.Enqueue(task)
+	return s.retryQueue.Enqueue(ctx, task)
 }
 
 func unavailable(ctx context.Context, err error) bool {

@@ -14,7 +14,9 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/sweetlemon356/lab3-rsoi/internal/gateway/adapters/retryqueue"
 	"github.com/sweetlemon356/lab3-rsoi/internal/gateway/config"
+	"github.com/sweetlemon356/lab3-rsoi/internal/platform/rabbitmqtest"
 )
 
 // These HTTP fixtures exercise the real Gateway wiring, not implementations of
@@ -207,7 +209,7 @@ func TestGatewayBookingLifecycleThroughRealHTTPClients(t *testing.T) {
 	cfg, state := fixtureServers(t)
 	client := &http.Client{Timeout: cfg.ClientTimeout}
 	t.Cleanup(client.CloseIdleConnections)
-	handler, _ := buildHandler(cfg, slog.New(slog.NewTextHandler(io.Discard, nil)), client)
+	handler, _ := buildHandler(cfg, slog.New(slog.NewTextHandler(io.Discard, nil)), client, nil)
 	call := func(method, path, body, user string, status int) *httptest.ResponseRecorder {
 		t.Helper()
 		r := httptest.NewRequest(method, path, strings.NewReader(body))
@@ -273,10 +275,22 @@ func TestGatewayFaultToleranceThroughHTTPAndWorker(t *testing.T) {
 	cfg.CircuitThreshold = 2
 	client := &http.Client{Timeout: time.Second}
 	t.Cleanup(client.CloseIdleConnections)
-	handler, worker := buildHandler(cfg, slog.New(slog.NewTextHandler(io.Discard, nil)), client)
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	connection, name := rabbitmqtest.Open(t)
+	queue, err := retryqueue.New(connection, name, 1024, cfg.RetryInterval, cfg.CleanupTimeout, time.Second, logger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { queue.Close() })
+	handler, cleanup := buildHandler(cfg, logger, client, queue)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
-	go func() { defer close(done); worker(ctx) }()
+	go func() {
+		defer close(done)
+		if err := queue.Run(ctx, cleanup); err != nil {
+			t.Error(err)
+		}
+	}()
 	t.Cleanup(func() { cancel(); <-done })
 	call := func(method, path, body string, status int) *httptest.ResponseRecorder {
 		t.Helper()
@@ -376,4 +390,34 @@ func TestGatewayFaultToleranceThroughHTTPAndWorker(t *testing.T) {
 	call("GET", "/api/v1/hotels", "", 500)
 	call("GET", path, "", 500)
 	call("GET", "/manage/health", "", 200)
+}
+
+type queueHealthFake struct{ err error }
+
+func (q queueHealthFake) Ping(context.Context) error { return q.err }
+
+func TestGatewayReadinessDependsOnRabbitMQ(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		err  error
+		want int
+	}{
+		{"available", nil, 200},
+		{"unavailable", fmt.Errorf("RabbitMQ offline"), 503},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			handler := withQueueHealth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(200) }), queueHealthFake{err: tc.err})
+			for _, path := range []string{"/manage/health", "/api/v1/hotels"} {
+				response := httptest.NewRecorder()
+				handler.ServeHTTP(response, httptest.NewRequest("GET", path, nil))
+				want := 200
+				if path == "/manage/health" {
+					want = tc.want
+				}
+				if response.Code != want {
+					t.Fatalf("%s: status=%d, want=%d", path, response.Code, want)
+				}
+			}
+		})
+	}
 }

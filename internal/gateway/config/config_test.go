@@ -9,7 +9,7 @@ import (
 
 func cleanEnvironment(t *testing.T) {
 	t.Helper()
-	for _, key := range []string{"GATEWAY_ADDR", "RESERVATION_URL", "PAYMENT_URL", "LOYALTY_URL", "REQUEST_TIMEOUT", "CLIENT_TIMEOUT", "CLEANUP_TIMEOUT", "SHUTDOWN_TIMEOUT", "CIRCUIT_THRESHOLD", "CIRCUIT_TIMEOUT", "CIRCUIT_WINDOW", "RETRY_INTERVAL", "RETRY_CAPACITY"} {
+	for _, key := range []string{"GATEWAY_ADDR", "RABBITMQ_URL", "BROKER_TIMEOUT", "RESERVATION_URL", "PAYMENT_URL", "LOYALTY_URL", "REQUEST_TIMEOUT", "CLIENT_TIMEOUT", "CLEANUP_TIMEOUT", "SHUTDOWN_TIMEOUT", "CIRCUIT_THRESHOLD", "CIRCUIT_TIMEOUT", "CIRCUIT_WINDOW", "RETRY_INTERVAL", "RETRY_CAPACITY"} {
 		t.Setenv(key, "")
 	}
 }
@@ -26,7 +26,7 @@ func TestDefaultsProvideLocalDevelopmentConfiguration(t *testing.T) {
 	if got.RequestTimeout != 5*time.Second || got.ClientTimeout != 2*time.Second || got.CleanupTimeout != 2*time.Second || got.ShutdownTimeout != 10*time.Second {
 		t.Fatalf("timeouts=%+v", got)
 	}
-	if got.CircuitThreshold != 3 || got.CircuitTimeout != 10*time.Second || got.CircuitWindow != 10*time.Second || got.RetryInterval != 10*time.Second || got.RetryCapacity != 1024 {
+	if got.RabbitMQURL != "amqp://booking:booking@localhost:5672/" || got.BrokerTimeout != 2*time.Second || got.CircuitThreshold != 3 || got.CircuitTimeout != 10*time.Second || got.CircuitWindow != 10*time.Second || got.RetryInterval != 10*time.Second || got.RetryCapacity != 1024 {
 		t.Fatalf("fault tolerance defaults=%+v", got)
 	}
 }
@@ -38,14 +38,17 @@ func TestEnvironmentOverridesDefaults(t *testing.T) {
 	t.Setenv("REQUEST_TIMEOUT", "750ms")
 	t.Setenv("CIRCUIT_THRESHOLD", "5")
 	t.Setenv("CIRCUIT_WINDOW", "30s")
+	t.Setenv("RABBITMQ_URL", "amqps://user:password@rabbit.example:5671/booking")
+	t.Setenv("BROKER_TIMEOUT", "750ms")
 	got, err := config.Load()
-	if err != nil || got.Address != "127.0.0.1:9080" || got.PaymentURL != "https://payment.example:8443/api" || got.RequestTimeout != 750*time.Millisecond || got.CircuitThreshold != 5 || got.CircuitWindow != 30*time.Second {
+	if err != nil || got.Address != "127.0.0.1:9080" || got.PaymentURL != "https://payment.example:8443/api" || got.RequestTimeout != 750*time.Millisecond || got.CircuitThreshold != 5 || got.CircuitWindow != 30*time.Second || got.RabbitMQURL != "amqps://user:password@rabbit.example:5671/booking" || got.BrokerTimeout != 750*time.Millisecond {
 		t.Fatalf("config=%+v, err=%v", got, err)
 	}
 }
 
 func TestInvalidConfigurationFailsBeforeServerStarts(t *testing.T) {
 	for _, tc := range []struct{ key, value string }{
+		{"RABBITMQ_URL", "http://localhost:5672"}, {"RABBITMQ_URL", "amqp://"}, {"RABBITMQ_URL", "amqp://localhost:0"}, {"RABBITMQ_URL", "amqp://localhost?db=1"}, {"BROKER_TIMEOUT", "0s"}, {"BROKER_TIMEOUT", "bad"},
 		{"PAYMENT_URL", "payment:8060"}, {"PAYMENT_URL", "ftp://payment"}, {"PAYMENT_URL", "http://"},
 		{"PAYMENT_URL", "http://user:password@payment"}, {"PAYMENT_URL", "http://payment?x=1"}, {"PAYMENT_URL", "http://payment#fragment"},
 		{"GATEWAY_ADDR", "not-an-address"}, {"GATEWAY_ADDR", ":99999"}, {"GATEWAY_ADDR", ":0"},
